@@ -194,7 +194,7 @@ else:
 
 uploaded = st.sidebar.file_uploader("Or upload your own", type=["jpg","jpeg","png"])
 enhance = st.sidebar.checkbox("Enhance Contrast & Sharpen Edges", value=False)
-threshold = st.sidebar.slider("Threshold", 0.05, 0.8, 0.2, 0.05)
+threshold = 0.2
 
 # Load image
 if uploaded is not None:
@@ -205,7 +205,7 @@ else:
     st.warning("Please upload an image or add sample images to the 'samples/' folder.")
     st.stop()
 
-if st.sidebar.button("SEGMENT!"):
+if st.sidebar.button("CLICK HERE - SEGMENT!"):
     with st.spinner("Running inference..."):
         result = process_image(img, enhance=enhance, threshold=threshold)
     
