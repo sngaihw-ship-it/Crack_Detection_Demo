@@ -194,7 +194,7 @@ else:
 
 uploaded = st.sidebar.file_uploader("Or upload your own", type=["jpg","jpeg","png"])
 enhance = st.sidebar.checkbox("Enhance Contrast & Sharpen Edges", value=False)
-threshold = 0.2
+threshold = 0.05
 
 # Load image
 if uploaded is not None:
