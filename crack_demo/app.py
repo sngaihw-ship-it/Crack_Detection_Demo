@@ -162,7 +162,7 @@ def process_image(img_rgb, enhance=False, threshold=0.2):
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Crack Segmentation Pro", layout="wide")
-st.title("🔍 Crack Detection - Samuel Ngai")
+st.title("Crack Detection - Samuel Ngai")
 
 model = load_model()
 
@@ -193,7 +193,7 @@ else:
     choice = None
 
 uploaded = st.sidebar.file_uploader("Or upload your own", type=["jpg","jpeg","png"])
-enhance = st.sidebar.checkbox("✨ Enhance Contrast & Sharpen Edges", value=False)
+enhance = st.sidebar.checkbox("Enhance Contrast & Sharpen Edges", value=False)
 threshold = st.sidebar.slider("Threshold", 0.05, 0.8, 0.2, 0.05)
 
 # Load image
@@ -205,7 +205,7 @@ else:
     st.warning("Please upload an image or add sample images to the 'samples/' folder.")
     st.stop()
 
-if st.sidebar.button("🚀 SEGMENT!"):
+if st.sidebar.button("SEGMENT!"):
     with st.spinner("Running inference..."):
         result = process_image(img, enhance=enhance, threshold=threshold)
     
@@ -215,7 +215,7 @@ if st.sidebar.button("🚀 SEGMENT!"):
         if enhance:
             st.image(result["enhanced"], caption="Enhanced (CLAHE + Unsharp)", use_container_width=True)
     with col2:
-        st.image(result["heatmap"], caption="🌡️ Probability Heatmap", use_container_width=True)
+        st.image(result["heatmap"], caption="Probability Heatmap", use_container_width=True)
     
     col3, col4 = st.columns(2)
     with col3:
