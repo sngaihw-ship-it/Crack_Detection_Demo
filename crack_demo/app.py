@@ -10,6 +10,9 @@ import cv2
 import os
 from huggingface_hub import hf_hub_download
 
+# ---------- Get the directory where this script lives ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ---------- Model definition (UNet16 with VGG16) ----------
 class Interpolate(nn.Module):
     def __init__(self, scale_factor=2, mode='bilinear'):
@@ -87,7 +90,6 @@ class UNet16(nn.Module):
 # ---------- Model loader (Hugging Face Hub) ----------
 @st.cache_resource
 def load_model():
-    # Download the model from your public HF repository
     model_path = hf_hub_download(
         repo_id="Sansweeper/Crack_Detection",
         filename="model_unet_vgg_16_best.pt"
@@ -101,23 +103,16 @@ def load_model():
     model.eval()
     return model
 
-# ---------- Image Enhancement: Contrast + Edge Sharpening ----------
+# ---------- Image Enhancement ----------
 def enhance_image(img_rgb):
-    """
-    Apply CLAHE (contrast enhancement) and Unsharp Mask (edge sharpening).
-    """
-    # Convert to LAB for CLAHE (works better on L channel)
     lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     l = clahe.apply(l)
     enhanced = cv2.merge((l, a, b))
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
-    
-    # Unsharp Mask (edge sharpening)
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])  # strength 9
+    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
     sharpened = cv2.filter2D(enhanced, -1, kernel)
-    
     return sharpened
 
 # ---------- Preprocessing ----------
@@ -131,38 +126,26 @@ transform = transforms.Compose([
 # ---------- Inference ----------
 def process_image(img_rgb, enhance=False, threshold=0.2):
     h, w = img_rgb.shape[:2]
-    
-    # Apply enhancement if requested
     if enhance:
         img_rgb = enhance_image(img_rgb)
-    
-    # Resize to 448x448
     img_resized = cv2.resize(img_rgb, (448, 448), interpolation=cv2.INTER_AREA)
-    inp = transform(Image.fromarray(img_resized)).unsqueeze(0)   # [1,3,448,448]
-    
+    inp = transform(Image.fromarray(img_resized)).unsqueeze(0)
     with torch.no_grad():
-        out = model(inp)                                        # [1,1,448,448]
-        prob = torch.sigmoid(out).squeeze().cpu().numpy()       # [448,448]  → HEATMAP
-    
-    # Resize probability back to original dimensions
+        out = model(inp)
+        prob = torch.sigmoid(out).squeeze().cpu().numpy()
     prob_resized = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
-    
-    # --- Output 1: Probability Heatmap (color gradient) ---
-    # Convert to 0-255 uint8 and apply JET colormap
+
     prob_uint8 = (prob_resized * 255).astype(np.uint8)
-    heatmap = cv2.applyColorMap(prob_uint8, cv2.COLORMAP_JET)   # BGR output
+    heatmap = cv2.applyColorMap(prob_uint8, cv2.COLORMAP_JET)
     heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    
-    # --- Output 2: Binary Mask (thresholded) ---
+
     mask = (prob_resized > threshold).astype(np.uint8) * 255
-    
-    # --- Output 3: Overlay (red mask on original) ---
+
     overlay = img_rgb.copy()
     red = np.zeros_like(overlay)
     red[:,:,0] = mask
     overlay = cv2.addWeighted(overlay, 0.6, red, 0.4, 0)
-    
-    # --- Output 4: Dark background with white cracks ---
+
     dark = np.zeros_like(overlay)
     dark[:,:,0] = mask
     dark[:,:,1] = mask
@@ -174,36 +157,36 @@ def process_image(img_rgb, enhance=False, threshold=0.2):
         "heatmap": heatmap,
         "overlay": overlay,
         "dark": dark,
-        "mask": mask  # optional, for debugging
+        "mask": mask
     }
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Crack Segmentation Pro", layout="wide")
 st.title("🔍 Crack Detection - Samuel Ngai")
 
-# Load model once
 model = load_model()
 
-# Sidebar
 st.sidebar.title("Controls")
 
-# Sample images - fixed path for cloud deployment
-sample_dir = "samples"
+# ---------- Robust sample loading ----------
+# Look for 'samples' folder in the same directory as this script
+sample_dir = os.path.join(SCRIPT_DIR, "samples")
+if not os.path.exists(sample_dir):
+    # Fallback: try one level up (if samples is at repo root)
+    sample_dir = os.path.join(os.path.dirname(SCRIPT_DIR), "samples")
+
 samples = {}
 if os.path.exists(sample_dir):
-    sample_files = [f for f in os.listdir(sample_dir) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+    sample_files = [f for f in os.listdir(sample_dir) 
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     if sample_files:
         samples = {os.path.splitext(f)[0]: os.path.join(sample_dir, f) for f in sample_files}
     else:
-        st.warning("No sample images found in 'samples/' folder.")
+        st.sidebar.warning("No image files found in 'samples/' folder.")
 else:
-    # If samples folder doesn't exist in current directory, try parent directory (for different repo structures)
-    sample_dir = "../samples"
-    if os.path.exists(sample_dir):
-        sample_files = [f for f in os.listdir(sample_dir) if f.lower().endswith(('.png','.jpg','.jpeg'))]
-        if sample_files:
-            samples = {os.path.splitext(f)[0]: os.path.join(sample_dir, f) for f in sample_files}
+    st.sidebar.warning("No 'samples/' folder found. Please upload an image.")
 
+# Dropdown if samples exist
 if samples:
     choice = st.sidebar.selectbox("Pick a sample", list(samples.keys()))
 else:
@@ -226,17 +209,16 @@ if st.sidebar.button("🚀 SEGMENT!"):
     with st.spinner("Running inference..."):
         result = process_image(img, enhance=enhance, threshold=threshold)
     
-    # Display results in a clean grid
     col1, col2 = st.columns(2)
     with col1:
         st.image(result["original"], caption="Original", use_container_width=True)
         if enhance:
             st.image(result["enhanced"], caption="Enhanced (CLAHE + Unsharp)", use_container_width=True)
     with col2:
-        st.image(result["heatmap"], caption="🌡️ Probability Heatmap (Gradient)", use_container_width=True)
+        st.image(result["heatmap"], caption="🌡️ Probability Heatmap", use_container_width=True)
     
     col3, col4 = st.columns(2)
     with col3:
         st.image(result["overlay"], caption="Overlay (Cracks highlighted)", use_container_width=True)
     with col4:
-        st.image(result["dark"], caption="Binary Mask (White cracks)", use_container_width=True)
+        st.image(result["dark"], caption="Binary Mask", use_container_width=True)
