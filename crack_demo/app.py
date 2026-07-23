@@ -8,6 +8,7 @@ from PIL import Image
 import numpy as np
 import cv2
 import os
+from huggingface_hub import hf_hub_download
 
 # ---------- Model definition (UNet16 with VGG16) ----------
 class Interpolate(nn.Module):
@@ -83,20 +84,17 @@ class UNet16(nn.Module):
         dec1 = self.dec1(torch.cat([dec2, conv1], 1))
         return self.final(dec1)
 
-# ---------- Model loader (local path - no gdown needed) ----------
+# ---------- Model loader with Hugging Face Hub ----------
 @st.cache_resource
 def load_model():
-    # Use your existing local weights file
-    model_path = r"C:\Users\sngai\Downloads\crack-segmentation-main\crack-segmentation-main\models\model_unet_vgg_16_best.pt"
-    
-    # If you want to use the Google Drive download instead, uncomment below and comment out the above.
-    # if not os.path.exists("model_unet_vgg_16_best.pt"):
-    #     import gdown
-    #     gdown.download("https://drive.google.com/uc?id=1wA2eAsyFZArG3Zc9OaKvnBuxSAPyDl08", "model_unet_vgg_16_best.pt", quiet=False)
-    # model_path = "model_unet_vgg_16_best.pt"
-
-    model = UNet16(pretrained=False)
+    # Download the model from your HF repository (ensure the filename matches)
+    model_path = hf_hub_download(
+        repo_id="Sansweeper/Crack_Detection",   # your HF model repo
+        filename="model_unet_vgg_16_best.pt"    # the exact filename you uploaded
+    )
+    model = UNet16(pretrained=False)            # we load our own weights
     state = torch.load(model_path, map_location=torch.device('cpu'))
+    # The checkpoint might be a dict with a 'model' key, or just the state_dict
     if 'model' in state:
         model.load_state_dict(state['model'])
     else:
@@ -104,23 +102,16 @@ def load_model():
     model.eval()
     return model
 
-# ---------- Image Enhancement: Contrast + Edge Sharpening ----------
+# ---------- Image Enhancement (CLAHE + Unsharp Mask) ----------
 def enhance_image(img_rgb):
-    """
-    Apply CLAHE (contrast enhancement) and Unsharp Mask (edge sharpening).
-    """
-    # Convert to LAB for CLAHE (works better on L channel)
     lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     l = clahe.apply(l)
     enhanced = cv2.merge((l, a, b))
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
-    
-    # Unsharp Mask (edge sharpening)
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])  # strength 9
+    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
     sharpened = cv2.filter2D(enhanced, -1, kernel)
-    
     return sharpened
 
 # ---------- Preprocessing ----------
@@ -131,42 +122,35 @@ transform = transforms.Compose([
     transforms.Normalize(mean, std)
 ])
 
-# ---------- Inference ----------
-def process_image(img_rgb, enhance=False):
+# ---------- Inference function ----------
+def process_image(img_rgb, enhance=False, threshold=0.2):
     h, w = img_rgb.shape[:2]
-    
-    # Apply enhancement if requested
     if enhance:
         img_rgb = enhance_image(img_rgb)
-    
-    # Resize to 448x448
+    # Resize to 448x448 (model input size)
     img_resized = cv2.resize(img_rgb, (448, 448), interpolation=cv2.INTER_AREA)
-    inp = transform(Image.fromarray(img_resized)).unsqueeze(0)   # [1,3,448,448]
-    
+    inp = transform(Image.fromarray(img_resized)).unsqueeze(0)
     with torch.no_grad():
-        out = model(inp)                                        # [1,1,448,448]
-        prob = torch.sigmoid(out).squeeze().cpu().numpy()       # [448,448]  → HEATMAP
-    
-    # Resize probability back to original dimensions
+        out = model(inp)                       # shape: [1,1,448,448]
+        prob = torch.sigmoid(out).squeeze().cpu().numpy()  # [448,448]
+    # Resize probability back to original image size
     prob_resized = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
-    
-    # --- Output 1: Probability Heatmap (color gradient) ---
-    # Convert to 0-255 uint8 and apply JET colormap
+
+    # 1) Heatmap (colour gradient)
     prob_uint8 = (prob_resized * 255).astype(np.uint8)
-    heatmap = cv2.applyColorMap(prob_uint8, cv2.COLORMAP_JET)   # BGR output
+    heatmap = cv2.applyColorMap(prob_uint8, cv2.COLORMAP_JET)
     heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    
-    # --- Output 2: Binary Mask (thresholded) ---
-    threshold = 0.2
+
+    # 2) Binary mask (thresholded)
     mask = (prob_resized > threshold).astype(np.uint8) * 255
-    
-    # --- Output 3: Overlay (red mask on original) ---
+
+    # 3) Overlay (red mask on original)
     overlay = img_rgb.copy()
     red = np.zeros_like(overlay)
     red[:,:,0] = mask
     overlay = cv2.addWeighted(overlay, 0.6, red, 0.4, 0)
-    
-    # --- Output 4: Dark background with white cracks ---
+
+    # 4) Dark background with white cracks
     dark = np.zeros_like(overlay)
     dark[:,:,0] = mask
     dark[:,:,1] = mask
@@ -174,59 +158,65 @@ def process_image(img_rgb, enhance=False):
 
     return {
         "original": img_rgb,
-        "enhanced": img_rgb if not enhance else enhance_image(img_rgb), # show enhanced version if used
+        "enhanced": img_rgb if not enhance else enhance_image(img_rgb),
         "heatmap": heatmap,
         "overlay": overlay,
         "dark": dark,
-        "mask": mask  # optional, for debugging
     }
 
 # ---------- Streamlit UI ----------
-st.set_page_config(page_title="Crack Segmentation Pro", layout="wide")
-st.title("Crack Detection - Samuel Ngai")
+st.set_page_config(page_title="Crack Detection Pro", layout="wide")
+st.title("🔍 Crack Detection with Heatmap & Enhancement")
 
-# Load model once
+# Load model (cached)
 model = load_model()
 
-# Sidebar
+# Sidebar controls
 st.sidebar.title("Controls")
-sample_dir = "samples"
-samples = {
-    "Asphalt": os.path.join(sample_dir, "Asphalt_deterioration.png"),
-    "Bridge":  os.path.join(sample_dir, "Bridge-5.png"),
-    "Soil":    os.path.join(sample_dir, "Cracking-Soil.png"),
-}
-choice = st.sidebar.selectbox("Pick a sample", list(samples.keys()))
-uploaded = st.sidebar.file_uploader("Or upload your own", type=["jpg","jpeg","png"])
-enhance = st.sidebar.checkbox("Enhance Contrast & Sharpen Edges", value=False)
 
-# Load image
+# Sample images (if 'samples' folder exists)
+sample_dir = "samples"
+samples = {}
+if os.path.exists(sample_dir):
+    for f in os.listdir(sample_dir):
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            samples[f] = os.path.join(sample_dir, f)
+else:
+    # Fallback: no samples folder
+    samples = {}
+
+if samples:
+    choice = st.sidebar.selectbox("Pick a sample", list(samples.keys()))
+else:
+    choice = None
+
+uploaded = st.sidebar.file_uploader("Or upload your own", type=["jpg","jpeg","png"])
+enhance = st.sidebar.checkbox("✨ Enhance Contrast & Sharpen Edges", value=False)
+threshold = st.sidebar.slider("Threshold", 0.05, 0.8, 0.2, 0.05)
+
+# Load the selected image
 if uploaded is not None:
     img = np.array(Image.open(uploaded).convert("RGB"))
+elif choice is not None and samples:
+    img = np.array(Image.open(samples[choice]).convert("RGB"))
 else:
-    # Check if sample exists, if not, use a dummy or show error
-    sample_path = samples[choice]
-    if os.path.exists(sample_path):
-        img = np.array(Image.open(sample_path).convert("RGB"))
-    else:
-        st.error(f"Sample file not found: {sample_path}. Please upload an image.")
-        st.stop()
+    st.warning("Please upload an image or add sample images to the 'samples/' folder.")
+    st.stop()
 
-if st.sidebar.button("SEGMENT!"):
+if st.sidebar.button("🚀 Segment!"):
     with st.spinner("Running inference..."):
-        result = process_image(img, enhance=enhance)
+        result = process_image(img, enhance=enhance, threshold=threshold)
     
-    # Display results in 3 rows? Let's do a grid.
     col1, col2 = st.columns(2)
     with col1:
         st.image(result["original"], caption="Original", use_container_width=True)
         if enhance:
-            st.image(result["enhanced"], caption="Enhanced (CLAHE + Unsharp)", use_container_width=True)
+            st.image(result["enhanced"], caption="Enhanced", use_container_width=True)
     with col2:
-        st.image(result["heatmap"], caption="Probability Heatmap (Gradient)", use_container_width=True)
+        st.image(result["heatmap"], caption="🌡️ Probability Heatmap", use_container_width=True)
     
     col3, col4 = st.columns(2)
     with col3:
-        st.image(result["overlay"], caption="Overlay (Cracks highlighted)", use_container_width=True)
+        st.image(result["overlay"], caption="Overlay", use_container_width=True)
     with col4:
-        st.image(result["dark"], caption="Binary Mask (White cracks)", use_container_width=True)
+        st.image(result["dark"], caption="Binary Mask", use_container_width=True)
